@@ -1,0 +1,13 @@
+#! /usr/bin/make -f
+
+# Provides DEB_VERSION
+include /usr/share/dpkg/pkg-info.mk
+
+%:
+	dh $@ --with dkms
+
+override_dh_install:
+	dh_install src/* usr/src/rpi-pwm-audio-$(DEB_VERSION_UPSTREAM)/
+
+override_dh_dkms:
+	dh_dkms -V

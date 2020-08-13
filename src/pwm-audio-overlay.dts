@@ -1,0 +1,30 @@
+/dts-v1/;
+/plugin/;
+
+#define BCM2835_PLLD_PER		13
+#define BCM2835_CLOCK_PWM		30
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target = <&pwm>;
+        __overlay__ {
+			compatible = "brcm,bcm2835-audio-pwm";
+
+			clocks = <&clocks BCM2835_CLOCK_PWM>;
+			assigned-clocks = <&clocks BCM2835_CLOCK_PWM>;
+			assigned-clock-rates = <100000001>; /* 100Mhz + 1Hz to avoid fractional divider */
+			assigned-clock-parents = <&clocks BCM2835_PLLD_PER>;
+			
+			dmas = <&dma 5>;
+			dma-names = "pwm";
+			
+            status="okay";
+        };
+    };
+};
+
+/* compile with:
+   dtc -@ -H epapr -O dtb -o dual.dtbo -Wno-unit_address_vs_reg dual.dts
+*/

@@ -1,0 +1,22 @@
+Source: rpi-pwm-audio
+Maintainer: Alexis Murzeau <amubtdx@gmail.com>
+Section: kernel
+Priority: optional
+Standards-Version: 4.5.0
+Build-Depends: debhelper-compat (= 13),
+ dkms
+Homepage: https://salsa.debian.org/amurzeau/rpi-pwm-audio-driver
+Vcs-Git: https://salsa.debian.org/amurzeau/rpi-pwm-audio-driver.git
+Vcs-Browser: https://salsa.debian.org/amurzeau/rpi-pwm-audio-driver
+Rules-Requires-Root: no
+
+Package: rpi-pwm-audio-dkms
+Architecture: all
+Depends: ${misc:Depends}
+Description: raspberrypi 1 audio module with low latency
+ This kernel module use the PWM controller directly to output audio.
+ To use this module, you must:
+  - blacklist the snd-bcm3825 module
+  - enable the pwm-audio.dtbo overlay in config.txt:
+     dtoverlay=pwm-audio
+  - modprobe the module
