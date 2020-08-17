@@ -1,6 +1,11 @@
 PACKAGE_NAME="rpi-pwm-audio"
 PACKAGE_VERSION="#MODULE_VERSION#"
 BUILT_MODULE_NAME[0]="snd-bcm2835-pwm"
-DEST_MODULE_LOCATION[0]="/updates"
+DEST_MODULE_LOCATION[0]="/extra"
+
+# Build only for Raspberry Pi 1 kernels.
+# This regex avoid kernels with v7 or v8 suffixes.
+BUILD_EXCLUSIVE_KERNEL="^[0-9\.\+]+$"
+
 AUTOINSTALL="yes"
 
