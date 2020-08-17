@@ -81,140 +81,6 @@ MODULE_LICENSE("GPL");
 #define BCM2835_DMA_CHANIO(base, n) ((base) + BCM2835_DMA_CHAN(n))
 
 
-#define FILTER_TAP_NUM 128
-
-static int16_t filter_taps[FILTER_TAP_NUM] = {
-  85,
-  -31,
-  -30,
-  -31,
-  -34,
-  -37,
-  -40,
-  -42,
-  -43,
-  -43,
-  -41,
-  -37,
-  -30,
-  -21,
-  -9,
-  5,
-  21,
-  38,
-  56,
-  74,
-  91,
-  106,
-  119,
-  127,
-  132,
-  131,
-  124,
-  110,
-  90,
-  64,
-  31,
-  -6,
-  -49,
-  -94,
-  -142,
-  -189,
-  -234,
-  -274,
-  -308,
-  -334,
-  -348,
-  -350,
-  -337,
-  -308,
-  -261,
-  -197,
-  -116,
-  -16,
-  100,
-  230,
-  374,
-  529,
-  691,
-  858,
-  1025,
-  1190,
-  1349,
-  1497,
-  1631,
-  1749,
-  1847,
-  1922,
-  1974,
-  2000,
-  2000,
-  1974,
-  1922,
-  1847,
-  1749,
-  1631,
-  1497,
-  1349,
-  1190,
-  1025,
-  858,
-  691,
-  529,
-  374,
-  230,
-  100,
-  -16,
-  -116,
-  -197,
-  -261,
-  -308,
-  -337,
-  -350,
-  -348,
-  -334,
-  -308,
-  -274,
-  -234,
-  -189,
-  -142,
-  -94,
-  -49,
-  -6,
-  31,
-  64,
-  90,
-  110,
-  124,
-  131,
-  132,
-  127,
-  119,
-  106,
-  91,
-  74,
-  56,
-  38,
-  21,
-  5,
-  -9,
-  -21,
-  -30,
-  -37,
-  -41,
-  -43,
-  -43,
-  -42,
-  -40,
-  -37,
-  -34,
-  -31,
-  -30,
-  -31,
-  85
-};
-
-
 struct pwm_sample {
 	u32 left;
 	u32 right;
@@ -276,10 +142,7 @@ static int configure_dma(struct bcm2835_pwm_aud_t* chip) {
 	
 	dev_dbg(&chip->pdev->dev, "DMA source buffer virtual address: %p, physical address: %x, bus address: %x\n",
 			chip->dma_virt_src, virt_to_phys(chip->dma_virt_src), chip->dma_bus_src);
-	/*
-	memset(chip->dma_virt_src, 0, dma_buffer_size);
-	generate_sinus(chip, chip->dma_virt_src, dma_buffer_size);
-	*/
+
 	initialize_dma_buffer(chip->dma_virt_src, chip->dma_buffer_sample_count);
 	chip->pos = 0;
 
@@ -406,8 +269,6 @@ int bcm2835_pwm_aud_init(struct bcm2835_pwm_aud_t* chip, struct platform_device 
 	}
 	dev_dbg(&pdev->dev, "using DMA channel %d\n", chip->dma_channel->chan_id);
 	
-	filter_fir_init(&chip->filter, filter_taps, FILTER_TAP_NUM, 25, 3);
-	
 	return 0;
 	
 err:
@@ -441,20 +302,13 @@ void bcm2835_pwm_aud_free(struct bcm2835_pwm_aud_t* chip)
 		clk_put(chip->clk);
 		chip->clk = NULL;
 	}
-	/*
-	if(chip->pwm_reg_base) {
-		devm_iounmap(&chip->pdev->dev, chip->pwm_reg_base);
-		devm_release_mem_region(&chip->pdev->dev, chip->pwm_resource->start, resource_size(chip->pwm_resource));
-		chip->pwm_reg_base = NULL;
-	}*/
 }
 
 int bcm2835_pwm_aud_configure(struct bcm2835_pwm_aud_t* chip,
 							  int dma_period_sample_count,
 							  int dma_period_count,
 							  period_callback_t callback,
-							  void* callback_arg,
-							  bool enable_resampling)
+							  void* callback_arg)
 {
 	int ret = 0;
 	
@@ -468,15 +322,11 @@ int bcm2835_pwm_aud_configure(struct bcm2835_pwm_aud_t* chip,
 	
 	const int range = PWM_RANGE;
 	
-	if(enable_resampling)
-		chip->dma_period_sample_count = dma_period_sample_count * 25 / 3;
-	else
-		chip->dma_period_sample_count = dma_period_sample_count;
+	chip->dma_period_sample_count = dma_period_sample_count;
 	chip->dma_sample_size = sizeof(struct pwm_sample);
 	chip->dma_buffer_sample_count = chip->dma_period_sample_count * dma_period_count;
 	chip->callback = callback;
 	chip->callback_arg = callback_arg;
-	chip->enable_resampling = enable_resampling;
 	
 	bcm2835_pwm_aud_unconfigure(chip);
 	
@@ -505,11 +355,7 @@ int bcm2835_pwm_aud_unconfigure(struct bcm2835_pwm_aud_t* chip)
 		return 0;
 	
 	if(chip->tx) {
-			//dev_dbg(&chip->pdev->dev, "control = %x\n", pwm_reg_read(chip, PWM_REG_CONTROL));
-			//dev_dbg(&chip->pdev->dev, "dmac = %x\n", pwm_reg_read(chip, PWM_REG_DMAC));
 			bcm2835_pwm_aud_pause(chip, false);
-			//dev_dbg(&chip->pdev->dev, "control = %x\n", pwm_reg_read(chip, PWM_REG_CONTROL));
-			//dev_dbg(&chip->pdev->dev, "dmac = %x\n", pwm_reg_read(chip, PWM_REG_DMAC));
 			dev_dbg(&chip->pdev->dev, "terminating dma\n");
 			dmaengine_pause(chip->dma_channel);
 			ret = dmaengine_terminate_sync(chip->dma_channel);
@@ -574,54 +420,19 @@ int bcm2835_pwm_aud_write(struct bcm2835_pwm_aud_t* chip, void* data, int size_s
 	struct pwm_sample* output = ((struct pwm_sample*) (chip->dma_virt_src));
 	int volume = atomic_read(&chip->volume);
 	
-	if(chip->enable_resampling) {
-		int i, j;
-		int dma_pos, dma_pos_start;
-		
-		dma_pos_start = dma_pos = chip->pos; //(bcm2835_pwm_aud_pointer_internal(chip) / chip->dma_period_sample_count + 2) * chip->dma_period_sample_count;
-		/*
-		if(offset_sample + size_sample > chip->dma_buffer_sample_count) {
-			dev_err(&chip->pdev->dev, "bad write offset %d or size %d, above buffer size %d\n", offset_sample, size_sample, chip->dma_buffer_sample_count);
-			return -EINVAL;
-		}*/
-		
-		for(i = 0; i < size_sample; i++) {
-			struct filter_sample_hires_t outputs[25/3+ 1];
-			int out_size = 25/3 + 1;
-			
-			filter_fir_put(&chip->filter, (sample_hires_t)input[i].left * 25, (sample_hires_t)input[i].right * 25);
-			filter_fir_get(&chip->filter, outputs, &out_size);
-			
-			for(j = 0; j < out_size; j++) {
-				output[dma_pos].left = (outputs[j].left >> (sizeof(sample_t)*8 - 1)) * volume / 65536 + PWM_RANGE / 2;
-				output[dma_pos].right = (outputs[j].right >> (sizeof(sample_t)*8 - 1)) * volume / 65536 + PWM_RANGE / 2;
-				dma_pos++;
-				if(dma_pos >= chip->dma_buffer_sample_count)
-					dma_pos -= chip->dma_buffer_sample_count;
-			}
-		}
-		chip->pos = dma_pos;
-		//printk("write [0 %d], [%d %d], max %d\n", size_sample, dma_pos_start, dma_pos, chip->dma_buffer_sample_count);
-		/*
-		for(i = 0; i < size_sample; i++) {
-			output[i].left = ((input[i].left * volume) / 65536) + PWM_RANGE / 2;
-			output[i].right = ((input[i].right * volume) / 65536) + PWM_RANGE / 2;
-		}
-		*/
-	} else {
-		int i;
-		int dma_pos;
-		dma_pos = chip->pos;
-		
-		for(i = 0; i < size_sample; i++) {
-			output[dma_pos].left = (unsigned int)(input[i].left * volume + (PWM_RANGE * 65536 / 2)) / 65536;
-			output[dma_pos].right = (unsigned int)(input[i].right * volume + (PWM_RANGE * 65536 / 2)) / 65536;
-			dma_pos++;
-			if(dma_pos >= chip->dma_buffer_sample_count)
-				dma_pos -= chip->dma_buffer_sample_count;
-		}
-		chip->pos = dma_pos;
+	int i;
+	int dma_pos;
+	dma_pos = chip->pos;
+	
+	for(i = 0; i < size_sample; i++) {
+		output[dma_pos].left = (unsigned int)(input[i].left * volume + (PWM_RANGE * 65536 / 2)) / 65536;
+		output[dma_pos].right = (unsigned int)(input[i].right * volume + (PWM_RANGE * 65536 / 2)) / 65536;
+		dma_pos++;
+		if(dma_pos >= chip->dma_buffer_sample_count)
+			dma_pos -= chip->dma_buffer_sample_count;
 	}
+	chip->pos = dma_pos;
+
 	return 0;
 }
 
@@ -665,9 +476,5 @@ static int bcm2835_pwm_aud_pointer_internal(struct bcm2835_pwm_aud_t* chip) {
 int bcm2835_pwm_aud_pointer(struct bcm2835_pwm_aud_t* chip) {
 	int pos = bcm2835_pwm_aud_pointer_internal(chip);
 
-	if(chip->enable_resampling) {
-		return pos >= 0 ? pos * 3 / 25 : pos;
-	} else {
-		return pos;
-	}
+	return pos;
 }

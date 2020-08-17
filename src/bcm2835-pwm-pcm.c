@@ -25,7 +25,6 @@
 #include <sound/asound.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
-#include <sound/pcm-indirect.h>
 #include <linux/mutex.h>
 #include <linux/device.h>
 
@@ -42,7 +41,6 @@ MODULE_LICENSE("GPL");
 #define MAX_SUBSTREAMS 1
 #define SAMPLING_RATE (PWM_CLK_RATE/PWM_RANGE)
 
-static int snd_bcm2835_pwm_pcm_ack(struct snd_pcm_substream *substream);
 static snd_pcm_uframes_t snd_bcm2835_pwm_pcm_pointer(struct snd_pcm_substream *substream);
 
 struct bcm2835_alsa_chip;
@@ -50,18 +48,8 @@ struct bcm2835_alsa_chip;
 typedef struct bcm2835_alsa_stream {
 	struct bcm2835_alsa_chip* chip;
 	struct snd_pcm_substream *substream;
-	struct snd_pcm_indirect pcm_indirect;
-
-	struct semaphore buffers_update_sem;
-	struct semaphore control_sem;
-	spinlock_t lock;
-	volatile uint32_t control;
-	volatile uint32_t status;
-	
-	int pos;
 
 	bool configured;
-	bool use_resampling;
 } bcm2835_alsa_stream_t;
 
 typedef struct bcm2835_alsa_chip {
@@ -79,9 +67,9 @@ static struct bcm2835_alsa_chip * g_chip;
 
 static const struct snd_pcm_hardware bcm2835_pwm_pcm_hardware = {
 	.info		= SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID,
-	.formats		= SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_U32_LE,
-	.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_KNOT,
-	.rate_min = 48000,
+	.formats		= SNDRV_PCM_FMTBIT_U32_LE,
+	.rates = SNDRV_PCM_RATE_KNOT,
+	.rate_min = SAMPLING_RATE,
 	.rate_max = SAMPLING_RATE,
 	.channels_min = 2,
 	.channels_max = 2,
@@ -95,7 +83,7 @@ static const struct snd_pcm_hardware bcm2835_pwm_pcm_hardware = {
 
 /* The actual rates supported by the card. */
 static unsigned int samplerates[] = {
-	48000, SAMPLING_RATE,
+	SAMPLING_RATE,
 };
 static struct snd_pcm_hw_constraint_list constraints_rates = {
 	.count = ARRAY_SIZE(samplerates), 
@@ -120,22 +108,9 @@ static void snd_bcm2835_playback_free(struct snd_pcm_runtime *runtime)
 
 static void dma_callback(void *arg) {
 	bcm2835_alsa_stream_t *alsa_stream = (bcm2835_alsa_stream_t *) arg;
-	//static ktime_t previous;
 
 	if (alsa_stream->substream) {
-		//ktime_t start, end;
-		//int period_size = alsa_stream->substream->runtime->period_size;
-		//int buffer_size = alsa_stream->substream->runtime->buffer_size;
-		
-		//start = ktime_get();
-		
 		snd_pcm_period_elapsed(alsa_stream->substream);
-
-		//write_data(alsa_stream, period_size, buffer_size);
-		//end = ktime_get();
-		//trace_printk("dma_callback %lld ns out, %lld ns in, pos %d\n", ktime_to_ns(ktime_sub(start, previous)), ktime_to_ns(ktime_sub(end, start)), bcm2835_pwm_aud_pointer(&alsa_stream->chip->chip));
-		//previous = start;
-		//audio_info(alsa_stream->chip, "dma_callback\n");
 	}
 }
 
@@ -175,10 +150,6 @@ static int snd_bcm2835_playback_open(
 	/* Initialise alsa_stream */
 	alsa_stream->chip = chip;
 	alsa_stream->substream = substream;
-
-	sema_init(&alsa_stream->buffers_update_sem, 0);
-	sema_init(&alsa_stream->control_sem, 0);
-	spin_lock_init(&alsa_stream->lock);
 
 	runtime->private_data = alsa_stream;
 	runtime->private_free = snd_bcm2835_playback_free;
@@ -269,57 +240,30 @@ static int snd_bcm2835_pwm_pcm_hw_params(struct snd_pcm_substream *substream,
 		goto err;
 	}
 	
-	if(params_rate(params) == SAMPLING_RATE && params_format(params) != SNDRV_PCM_FORMAT_U32_LE) {
-		audio_error(chip, "When using 400kHz rate, format must be U32_LE but is %d\n", params_format(params));
-		error = -EINVAL;
-		goto err;
-	} else if(params_rate(params) != SAMPLING_RATE && params_format(params) != SNDRV_PCM_FORMAT_S16_LE) {
-		audio_error(chip, "When using 48kHz rate, format must be S16_LE but is %d\n", params_format(params));
+	if(params_format(params) != SNDRV_PCM_FORMAT_U32_LE) {
+		audio_error(chip, "Format must be U32_LE but is %d\n", params_format(params));
 		error = -EINVAL;
 		goto err;
 	}
-	
-	alsa_stream->use_resampling = params_rate(params) != SAMPLING_RATE;
 	
 	error = bcm2835_pwm_aud_configure(&alsa_stream->chip->chip,
 								   params_period_size(params),
 								   params_periods(params),
 								   dma_callback,
-								   alsa_stream,
-								   alsa_stream->use_resampling
- 									);
+								   alsa_stream);
 	if(error) {
 		audio_error(chip, "Failed to configure: %d\n", error);
 		goto err;
 	}
 	
-	memset(&alsa_stream->pcm_indirect, 0, sizeof(alsa_stream->pcm_indirect));
+	substream->dma_buffer.addr = alsa_stream->chip->chip.dma_bus_src;
+	substream->dma_buffer.area = alsa_stream->chip->chip.dma_virt_src;
+	substream->dma_buffer.bytes = alsa_stream->chip->chip.dma_buffer_sample_count * alsa_stream->chip->chip.dma_sample_size;
+	substream->dma_buffer.dev.type = SNDRV_DMA_TYPE_CONTINUOUS;
+	substream->dma_buffer.dev.dev = NULL;
+	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
 	
-	if(alsa_stream->use_resampling) {
-		error = snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(params));
-		if (error < 0) {
-			audio_error
-				(chip, " pcm_lib_malloc failed to allocate pages for buffers\n");
-			goto err;
-		}
-	
-		memset(runtime->dma_area, 0, runtime->dma_bytes);
-
-		
-		alsa_stream->pcm_indirect.sw_buffer_size = runtime->dma_bytes;
-		alsa_stream->pcm_indirect.hw_buffer_size = params_period_bytes(params) * params_periods(params);
-		
-		audio_info(chip, "pcm indirect sw size: %u, hw size: %u\n", alsa_stream->pcm_indirect.sw_buffer_size, alsa_stream->pcm_indirect.hw_buffer_size);
-	} else {
-		substream->dma_buffer.addr = alsa_stream->chip->chip.dma_bus_src;
-		substream->dma_buffer.area = alsa_stream->chip->chip.dma_virt_src;
-		substream->dma_buffer.bytes = alsa_stream->chip->chip.dma_buffer_sample_count * alsa_stream->chip->chip.dma_sample_size;
-		substream->dma_buffer.dev.type = SNDRV_DMA_TYPE_CONTINUOUS;
-		substream->dma_buffer.dev.dev = NULL;
-		snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
-		
-		audio_info(chip, "pcm direct dma size: %u\n", substream->dma_buffer.bytes);
-	}
+	audio_info(chip, "pcm direct dma size: %u\n", substream->dma_buffer.bytes);
 	
 	
 	if(runtime->dma_bytes != params_period_size(params) * params_periods(params) * 8) {
@@ -350,52 +294,9 @@ static int snd_bcm2835_pwm_pcm_hw_free(struct snd_pcm_substream *substream)
 	return snd_pcm_lib_free_pages(substream);
 }
 
-static void dump_pcm_indirect(bcm2835_alsa_chip_t *chip, struct snd_pcm_indirect *rec) {
-	audio_info(chip, "PCM indirect:\n");
-	audio_info(chip, "  hw_buffer_size = %u\n", rec->hw_buffer_size);
-	audio_info(chip, "  hw_queue_size = %u\n", rec->hw_queue_size);
-	audio_info(chip, "  hw_data = %u\n", rec->hw_data);
-	audio_info(chip, "  hw_io = %u\n", rec->hw_io);
-	audio_info(chip, "  hw_ready = %d\n", rec->hw_ready);
-	audio_info(chip, "  sw_buffer_size = %u\n", rec->sw_buffer_size);
-	audio_info(chip, "  sw_data = %u\n", rec->sw_data);
-	audio_info(chip, "  sw_io = %u\n", rec->sw_io);
-	audio_info(chip, "  sw_ready = %d\n", rec->sw_ready);
-	audio_info(chip, "  appl_ptr = %lu\n", rec->appl_ptr);
-	audio_info(chip, "  runtime appl_ptr = %lu\n", chip->alsa_stream->substream->runtime->control->appl_ptr);
-	audio_info(chip, "  runtime hw_ptr = %lu\n", chip->alsa_stream->substream->runtime->status->hw_ptr);
-}
-
 /* prepare callback */
 static int snd_bcm2835_pwm_pcm_prepare(struct snd_pcm_substream *substream)
 {
-	bcm2835_alsa_chip_t *chip = snd_pcm_substream_chip(substream);
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
-
-	//audio_info(chip, " .. IN\n");
-
-	if (mutex_lock_interruptible(&chip->audio_mutex))
-		return -EINTR;
-	
-	alsa_stream->pos = 0;
-	
-	if(alsa_stream->use_resampling) {
-		snd_bcm2835_pwm_pcm_pointer(substream);
-		alsa_stream->pcm_indirect.appl_ptr = 0;
-		alsa_stream->pcm_indirect.sw_data = 0;
-		alsa_stream->pcm_indirect.sw_io = 0;
-		alsa_stream->pcm_indirect.sw_ready = 0;
-		alsa_stream->pcm_indirect.hw_data = alsa_stream->pcm_indirect.hw_io;
-		dump_pcm_indirect(chip, &alsa_stream->pcm_indirect);
-		bcm2835_pwm_aud_reset_pos(&chip->chip);
-	}
-
-	/* in preparation of the stream, set the controls (volume level) of the stream */
-	//bcm2835_audio_set_ctls(alsa_stream->chip);
-
-	mutex_unlock(&chip->audio_mutex);
-	//audio_info(chip, " .. OUT\n");
 	return 0;
 }
 
@@ -412,23 +313,15 @@ static int snd_bcm2835_pwm_pcm_trigger(struct snd_pcm_substream *substream, int 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 		atomic_set(&chip->chip.running, 1);
-		//alsa_stream->pcm_indirect.hw_io =
-		//alsa_stream->pcm_indirect.hw_data = frames_to_bytes(runtime, bcm2835_pwm_aud_pointer(&chip->chip));
-		//substream->ops->ack(substream);
-		//dump_pcm_indirect(chip, &alsa_stream->pcm_indirect);
 		bcm2835_pwm_aud_pause(&chip->chip, false);
-		//dump_pcm_indirect(chip, &alsa_stream->pcm_indirect);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
-		//atomic_set(&chip->chip.running, 0);
-		//dump_pcm_indirect(chip, &alsa_stream->pcm_indirect);
 		bcm2835_pwm_aud_pause(&chip->chip, true);
 		break;
 	default:
 		err = -EINVAL;
 	}
 
-	//audio_info(chip, " .. OUT\n");
 	return err;
 }
 
@@ -437,10 +330,6 @@ static snd_pcm_uframes_t
 snd_bcm2835_pwm_pcm_pointer(struct snd_pcm_substream *substream)
 {
 	bcm2835_alsa_chip_t *chip = snd_pcm_substream_chip(substream);
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
-	snd_pcm_uframes_t frames;
-	//audio_info(chip, " .. IN\n");
 	
 	int dma_pos = bcm2835_pwm_aud_pointer(&chip->chip);
 	if(dma_pos < 0) {
@@ -448,50 +337,8 @@ snd_bcm2835_pwm_pcm_pointer(struct snd_pcm_substream *substream)
 		return 0;
 	}
 	
-	if(alsa_stream->use_resampling) {
-		frames = snd_pcm_indirect_playback_pointer(substream, &alsa_stream->pcm_indirect, frames_to_bytes(runtime, dma_pos));
-	} else {
-		frames = dma_pos;
-	}
-	//dump_pcm_indirect(alsa_stream->chip, &alsa_stream->pcm_indirect);
-	//audio_info(chip, " .. OUT %u\n", dma_pos);
-	if(frames == 20475)
-		audio_info(chip, " .. OUT %u\n", dma_pos);
-	return frames;
-}
 
-static void snd_bcm2835_pwm_pcm_transfer(struct snd_pcm_substream *substream,
-				    struct snd_pcm_indirect *rec, size_t bytes)
-{
-	bcm2835_alsa_chip_t *chip = snd_pcm_substream_chip(substream);
-	char *src = (void *)(substream->runtime->dma_area + rec->sw_data);
-	int err;
-
-	//audio_info(chip, " .. IN %d, %d, %d\n", rec->hw_data, rec->sw_data, bytes);
-	err = bcm2835_pwm_aud_write(&chip->chip,
-								src,
-							 bytes_to_frames(substream->runtime,bytes));
-	if(err) {
-		audio_error(chip, "failed to write audio data: %d\n", err);
-	}
-	//audio_info(chip, " .. OUT\n");
-}
-
-static int snd_bcm2835_pwm_pcm_ack(struct snd_pcm_substream *substream)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
-	struct snd_pcm_indirect *pcm_indirect = &alsa_stream->pcm_indirect;
-
-	//audio_info(alsa_stream->chip, " .. IN\n");
-	if(alsa_stream->use_resampling) {
-		snd_pcm_indirect_playback_transfer(substream, pcm_indirect,
-						snd_bcm2835_pwm_pcm_transfer);
-	}
-	//dump_pcm_indirect(alsa_stream->chip, pcm_indirect);
-	//audio_info(alsa_stream->chip, " .. OUT\n");
-	//__WARN();
-	return 0;
+	return dma_pos;
 }
 
 static int snd_bcm2835_pwm_pcm_lib_ioctl(struct snd_pcm_substream *substream,
@@ -515,7 +362,6 @@ static struct snd_pcm_ops snd_bcm2835_playback_ops = {
 	.prepare = snd_bcm2835_pwm_pcm_prepare,
 	.trigger = snd_bcm2835_pwm_pcm_trigger,
 	.pointer = snd_bcm2835_pwm_pcm_pointer,
-	.ack = snd_bcm2835_pwm_pcm_ack,
 };
 
 /* create a pcm device */
@@ -537,13 +383,6 @@ static int snd_bcm2835_pwm_new_pcm(bcm2835_alsa_chip_t * chip)
 	/* set operators */
 	snd_pcm_set_ops(chip->pcm, SNDRV_PCM_STREAM_PLAYBACK,
 			&snd_bcm2835_playback_ops);
-
-	/* pre-allocation of buffers */
-	/* NOTE: this may fail */
-	/*snd_pcm_lib_preallocate_pages_for_all(chip->pcm, SNDRV_DMA_TYPE_CONTINUOUS,
-					      snd_dma_continuous_data (GFP_KERNEL),
-					      bcm2835_pwm_pcm_hardware.buffer_bytes_max, bcm2835_pwm_pcm_hardware.buffer_bytes_max);*/
-
 
 out:
 	audio_info(chip, " .. OUT %d\n", err);
@@ -582,14 +421,10 @@ static ssize_t snd_bcm2835_status_show(struct device *dev, struct device_attribu
 		return -ENODEV;
 	} else {
 		int alsa_write_pos = 0;
-		int alsa_indirect_sw_pos = 0;
-		int alsa_indirect_hw_pos = 0;
 		int alsa_size = 1;
 		int alsa_period = 1;
 		int dma_write_pos = g_chip->chip.pos;
 		int dma_read_pos = bcm2835_pwm_aud_pointer(&g_chip->chip);
-		int alsa_indirect_sw_ptr = 0;
-		int alsa_indirect_hw_ptr = 0;
 		int count = 0;
 		
 		if(g_chip->alsa_stream) {
@@ -598,20 +433,11 @@ static ssize_t snd_bcm2835_status_show(struct device *dev, struct device_attribu
 			alsa_size = runtime->buffer_size;
 			alsa_period = runtime->period_size;
 			alsa_write_pos = runtime->control->appl_ptr % runtime->buffer_size;
-			alsa_indirect_sw_pos = g_chip->alsa_stream->pcm_indirect.sw_data / 4;
-			alsa_indirect_hw_pos = g_chip->alsa_stream->pcm_indirect.hw_data / 4;
-			alsa_indirect_sw_ptr = g_chip->alsa_stream->pcm_indirect.sw_io / 4;
-			alsa_indirect_hw_ptr = g_chip->alsa_stream->pcm_indirect.hw_io / 4;
 		}
 		
 		count += snd_bcm2835_print_bar(buf + count, "alsa_write_pos", alsa_write_pos, alsa_size, alsa_period);
-		count += snd_bcm2835_print_bar(buf + count, "indirect_sw_pos", alsa_indirect_sw_pos, alsa_size, alsa_period);
-		count += snd_bcm2835_print_bar(buf + count, "indirect_sw_ptr", alsa_indirect_sw_ptr, alsa_size, alsa_period);
-		count += snd_bcm2835_print_bar(buf + count, "indirect_hw_pos", alsa_indirect_hw_pos, alsa_size, alsa_period);
 		count += snd_bcm2835_print_bar(buf + count, "dma_write_pos", dma_write_pos * 3 / 25, alsa_size, alsa_period);
-		count += snd_bcm2835_print_bar(buf + count, "indirect_hw_ptr", alsa_indirect_hw_ptr, alsa_size, alsa_period);
 		count += snd_bcm2835_print_bar(buf + count, "dma_read_pos", dma_read_pos, alsa_size, alsa_period);
-		//dump_pcm_indirect(g_chip, &g_chip->alsa_stream->pcm_indirect);
 		
 		return count;
 	}
