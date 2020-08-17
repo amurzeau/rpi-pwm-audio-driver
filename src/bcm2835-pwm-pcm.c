@@ -101,8 +101,11 @@ static void snd_bcm2835_playback_free(struct snd_pcm_runtime *runtime)
 	if (alsa_stream) {
 		if(alsa_stream->chip->alsa_stream == alsa_stream)
 			alsa_stream->chip->alsa_stream = NULL;
+		if(alsa_stream->substream)
+			alsa_stream->substream->private_data = NULL;
 		kfree(alsa_stream);
 		runtime->private_data = NULL;
+		runtime->private_free = NULL;
 	}
 }
 

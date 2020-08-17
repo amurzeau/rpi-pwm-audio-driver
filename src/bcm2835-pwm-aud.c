@@ -357,7 +357,6 @@ int bcm2835_pwm_aud_unconfigure(struct bcm2835_pwm_aud_t* chip)
 	if(chip->tx) {
 			bcm2835_pwm_aud_pause(chip, false);
 			dev_dbg(&chip->pdev->dev, "terminating dma\n");
-			dmaengine_pause(chip->dma_channel);
 			ret = dmaengine_terminate_sync(chip->dma_channel);
 			if(ret)
 				dev_err(&chip->pdev->dev, "failed to terminate dma: %d\n", ret);
