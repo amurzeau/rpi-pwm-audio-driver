@@ -1,3 +1,12 @@
+rpi-pwm-audio (0.1.2) unstable; urgency=medium
+
+  * Free HW resource in remove() instead of devres_release, to remove them first before all devm ones
+  * Fix panic when removing the module after having played audio
+  * Build the module only for Raspberry Pi 1 kernels (not ending with -v7.* or -v8.*)
+  * dkms: install DTB overlay pwm-audio.dtbo into /boot/overlays
+
+ -- Alexis Murzeau <amubtdx@gmail.com>  Mon, 17 Aug 2020 19:07:43 +0200
+
 rpi-pwm-audio (0.1.1) unstable; urgency=medium
 
   * Remove resampling functionality that was not used nor tested
