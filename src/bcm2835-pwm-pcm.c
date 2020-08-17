@@ -444,9 +444,7 @@ static ssize_t snd_bcm2835_status_show(struct device *dev, struct device_attribu
 }
 static DEVICE_ATTR(status, S_IRUGO, snd_bcm2835_status_show, NULL);
 
-static void snd_bcm2835_chip_release(struct device *dev, void *res) {
-	bcm2835_alsa_chip_t* chip = (bcm2835_alsa_chip_t*) res;
-	
+static void snd_bcm2835_chip_release(struct device *dev, bcm2835_alsa_chip_t *chip) {
 	dev_dbg(dev, "releasing chip\n");
 	
 	device_remove_file(dev, &dev_attr_status);
@@ -467,9 +465,11 @@ static int snd_bcm2835_pwm_alsa_probe(struct platform_device *pdev)
 	
 	dev_dbg(&pdev->dev, "probed\n");
 	
-	chip = devres_alloc(snd_bcm2835_chip_release, sizeof(*chip), GFP_KERNEL);
+	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
+	
+	dev_set_drvdata(&pdev->dev, chip);
 
 	error = bcm2835_pwm_aud_init(&chip->chip, pdev);
 	if(error) {
@@ -500,7 +500,6 @@ static int snd_bcm2835_pwm_alsa_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	devres_add(dev, chip);
 	g_chip = chip;
 	
 	device_create_file(dev, &dev_attr_status);
@@ -508,7 +507,6 @@ static int snd_bcm2835_pwm_alsa_probe(struct platform_device *pdev)
 err:
 	if(chip) {
 		snd_bcm2835_chip_release(dev, chip);
-		devres_free(chip);
 	}
 	dev_err(&pdev->dev, "error %d\n", error);
 	return error;
@@ -516,6 +514,9 @@ err:
 
 static int snd_bcm2835_pwm_alsa_remove(struct platform_device *pdev)
 {
+	bcm2835_alsa_chip_t* chip = dev_get_drvdata(&pdev->dev);
+	if(chip)
+		snd_bcm2835_chip_release(&pdev->dev, chip);
 	dev_dbg(&pdev->dev, "removed\n");
 	return 0;
 }
