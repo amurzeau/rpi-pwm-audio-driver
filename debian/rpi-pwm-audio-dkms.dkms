@@ -3,6 +3,8 @@ PACKAGE_VERSION="#MODULE_VERSION#"
 BUILT_MODULE_NAME[0]="snd-bcm2835-pwm"
 DEST_MODULE_LOCATION[0]="/extra"
 
+MAKE[0]="make -C ${kernel_source_dir} M=${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}/build && cp ${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}/build/pwm-audio.dtbo /boot/overlays/"
+
 # Build only for Raspberry Pi 1 kernels.
 # This regex avoid kernels with v7 or v8 suffixes.
 BUILD_EXCLUSIVE_KERNEL="^[0-9\.\+]+$"
